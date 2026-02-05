@@ -10,12 +10,19 @@ import (
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"sync"
 )
 
-// Use hash map w/o mutex since the requirements does not specify handling concurrency
-var Subscribers = make(map[string][][]string)
+type Subscribers struct {
+	mu   sync.Mutex
+	subs map[string][][]string
+}
 
 var client = &http.Client{}
+
+var s = Subscribers{
+	subs: make(map[string][][]string),
+}
 
 func main() {
 	http.HandleFunc("/", handlePost)
@@ -53,7 +60,7 @@ func handlePublish(w http.ResponseWriter, r *http.Request) {
 	message.Topic = r.FormValue("topic")
 	message.Message = r.FormValue("message")
 
-	sendMessageToSubs(message)
+	s.sendMessageToSubs(message)
 }
 
 func handlePost(w http.ResponseWriter, r *http.Request) {
@@ -74,13 +81,23 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "POST" {
 		if status := verifySub(message.Mode, message.Topic, message.Callback) && message.Callback != ""; status == true {
-			Subscribers[message.Topic] = append(Subscribers[message.Topic], []string{message.Callback, message.Secret})
+			s.addSubscriber(message.Topic, message.Callback, message.Secret)
 		}
 	}
 }
 
-func sendMessageToSubs(post publishPost) {
-	for _, sub := range Subscribers[post.Topic] {
+func (s *Subscribers) addSubscriber(topic string, callback string, secret string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subs[topic] = append(s.subs[topic], []string{callback, secret})
+}
+
+func (s *Subscribers) sendMessageToSubs(post publishPost) {
+	s.mu.Lock()
+	topicSubs := s.subs[post.Topic]
+	s.mu.Unlock()
+
+	for _, sub := range topicSubs {
 		sendTopicContent(post, sub[0], sub[1])
 	}
 }
